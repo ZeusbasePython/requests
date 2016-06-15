@@ -192,20 +192,24 @@ applied, replace the call to :meth:`Request.prepare()
 SSL Cert Verification
 ---------------------
 
-Requests can verify SSL certificates for HTTPS requests, just like a web browser.
-To check a host's SSL certificate, you can use the ``verify`` argument::
+Requests verifies SSL certificates for HTTPS requests, just like a web browser.
+By default, SSL verification is enabled, and Requests will throw a SSLError if
+it's unable to verify the certificate::
 
-    >>> requests.get('https://kennethreitz.com', verify=True)
-    requests.exceptions.SSLError: hostname 'kennethreitz.com' doesn't match either of '*.herokuapp.com', 'herokuapp.com'
+    >>> requests.get('https://requestb.in')
+    requests.exceptions.SSLError: hostname 'requestb.in' doesn't match either of '*.herokuapp.com', 'herokuapp.com'
 
-I don't have SSL setup on this domain, so it fails. Excellent. GitHub does though::
+I don't have SSL setup on this domain, so it throws an exception. Excellent. GitHub does though::
 
-    >>> requests.get('https://github.com', verify=True)
+    >>> requests.get('https://github.com')
     <Response [200]>
 
 You can pass ``verify`` the path to a CA_BUNDLE file or directory with certificates of trusted CAs::
 
     >>> requests.get('https://github.com', verify='/path/to/certfile')
+
+.. note:: If ``verify`` is set to a path to a directory, the directory must have been processed using
+  the c_rehash utility supplied with OpenSSL.
 
 This list of trusted CAs can also be specified through the ``REQUESTS_CA_BUNDLE`` environment variable.
 
@@ -225,13 +229,13 @@ file's path::
     >>> requests.get('https://kennethreitz.com', cert=('/path/client.cert', '/path/client.key'))
     <Response [200]>
 
-If you specify a wrong path or an invalid cert::
+If you specify a wrong path or an invalid cert, you'll get a SSLError::
 
     >>> requests.get('https://kennethreitz.com', cert='/wrong_path/client.pem')
     SSLError: [Errno 336265225] _ssl.c:347: error:140B0009:SSL routines:SSL_CTX_use_PrivateKey_file:PEM lib
 
 .. warning:: The private key to your local certificate *must* be unencrypted.
-   Currently, requests does not support using encrypted keys.
+   Currently, Requests does not support using encrypted keys.
 
 .. _ca-certificates:
 
@@ -251,7 +255,7 @@ system.
 For the sake of security we recommend upgrading certifi frequently!
 
 .. _HTTP persistent connection: https://en.wikipedia.org/wiki/HTTP_persistent_connection
-.. _connection pooling: https://urllib3.readthedocs.org/en/latest/pools.html
+.. _connection pooling: https://urllib3.readthedocs.io/en/latest/pools.html
 .. _certifi: http://certifi.io/
 .. _Mozilla trust store: https://hg.mozilla.org/mozilla-central/raw-file/tip/security/nss/lib/ckfw/builtins/certdata.txt
 
@@ -542,6 +546,29 @@ any request to the given scheme and exact hostname.
     proxies = {'http://10.20.1.128': 'http://10.10.1.10:5323'}
 
 Note that proxy URLs must include the scheme.
+
+SOCKS
+^^^^^
+
+.. versionadded:: 2.10.0
+
+In addition to basic HTTP proxies, Requests also supports proxies using the
+SOCKS protocol. This is an optional feature that requires that additional
+third-party libraries be installed before use.
+
+You can get the dependencies for this feature from ``pip``:
+
+.. code-block:: bash
+
+    $ pip install requests[socks]
+
+Once you've installed those dependencies, using a SOCKS proxy is just as easy
+as using a HTTP one::
+
+    proxies = {
+        'http': 'socks5://user:pass@host:port',
+        'https': 'socks5://user:pass@host:port'
+    }
 
 .. _compliance:
 
@@ -871,6 +898,13 @@ Two excellent examples are `grequests`_ and `requests-futures`_.
 
 .. _`grequests`: https://github.com/kennethreitz/grequests
 .. _`requests-futures`: https://github.com/ross/requests-futures
+
+Header Ordering
+---------------
+
+In unusual circumstances you may want to provide headers in an ordered manner. If you pass an ``OrderedDict`` to the ``headers`` keyword argument, that will provide the headers with an ordering. *However*, the ordering of the default headers used by Requests will be preferred, which means that if you override default headers in the ``headers`` keyword argument, they may appear out of order compared to other headers in that keyword argument.
+
+If this is problematic, users should consider setting the default headers on a :class:`Session <requests.Session>` object, by setting :data:`Session <requests.Session.headers>` to a custom ``OrderedDict``. That ordering will always be preferred.
 
 .. _timeouts:
 

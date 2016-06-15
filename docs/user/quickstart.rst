@@ -305,7 +305,7 @@ In the event you are posting a very large file as a ``multipart/form-data``
 request, you may want to stream the request. By default, ``requests`` does not
 support this, but there is a separate package which does -
 ``requests-toolbelt``. You should read `the toolbelt's documentation
-<https://toolbelt.readthedocs.org>`_ for more details about how to use it.
+<https://toolbelt.readthedocs.io>`_ for more details about how to use it.
 
 For sending multiple files in one request refer to the :ref:`advanced <advanced>`
 section.
@@ -492,8 +492,9 @@ Errors and Exceptions
 In the event of a network problem (e.g. DNS failure, refused connection, etc),
 Requests will raise a :class:`~requests.exceptions.ConnectionError` exception.
 
-In the rare event of an invalid HTTP response, Requests will raise an
-:class:`~requests.exceptions.HTTPError` exception.
+:meth:`Response.raise_for_status() <requests.Response.raise_for_status>` will
+raise an :class:`~requests.exceptions.HTTPError` if the HTTP request
+returned an unsuccessful status code.
 
 If a request times out, a :class:`~requests.exceptions.Timeout` exception is
 raised.

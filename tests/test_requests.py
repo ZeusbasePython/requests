@@ -21,7 +21,8 @@ from requests.compat import (
 from requests.cookies import cookiejar_from_dict, morsel_to_cookie
 from requests.exceptions import (
     ConnectionError, ConnectTimeout, InvalidSchema, InvalidURL,
-    MissingSchema, ReadTimeout, Timeout, RetryError, TooManyRedirects)
+    MissingSchema, ReadTimeout, Timeout, RetryError, TooManyRedirects,
+    ProxyError)
 from requests.models import PreparedRequest
 from requests.structures import CaseInsensitiveDict
 from requests.sessions import SessionRedirectMixin
@@ -29,6 +30,7 @@ from requests.models import urlencode
 from requests.hooks import default_hooks
 
 from .compat import StringIO, u
+from .utils import override_environ
 
 # Requests to this URL should always fail with a connection timeout (nothing
 # listening on that port)
@@ -162,6 +164,49 @@ class TestRequests:
         else:
             pytest.fail('Expected custom max number of redirects to be respected but was not')
 
+    def test_http_301_changes_post_to_get(self, httpbin):
+        r = requests.post(httpbin('status', '301'))
+        assert r.status_code == 200
+        assert r.request.method == 'GET'
+        assert r.history[0].status_code == 301
+        assert r.history[0].is_redirect
+
+    def test_http_301_doesnt_change_head_to_get(self, httpbin):
+        r = requests.head(httpbin('status', '301'), allow_redirects=True)
+        print(r.content)
+        assert r.status_code == 200
+        assert r.request.method == 'HEAD'
+        assert r.history[0].status_code == 301
+        assert r.history[0].is_redirect
+
+    def test_http_302_changes_post_to_get(self, httpbin):
+        r = requests.post(httpbin('status', '302'))
+        assert r.status_code == 200
+        assert r.request.method == 'GET'
+        assert r.history[0].status_code == 302
+        assert r.history[0].is_redirect
+
+    def test_http_302_doesnt_change_head_to_get(self, httpbin):
+        r = requests.head(httpbin('status', '302'), allow_redirects=True)
+        assert r.status_code == 200
+        assert r.request.method == 'HEAD'
+        assert r.history[0].status_code == 302
+        assert r.history[0].is_redirect
+
+    def test_http_303_changes_post_to_get(self, httpbin):
+        r = requests.post(httpbin('status', '303'))
+        assert r.status_code == 200
+        assert r.request.method == 'GET'
+        assert r.history[0].status_code == 303
+        assert r.history[0].is_redirect
+
+    def test_http_303_doesnt_change_head_to_get(self, httpbin):
+        r = requests.head(httpbin('status', '303'), allow_redirects=True)
+        assert r.status_code == 200
+        assert r.request.method == 'HEAD'
+        assert r.history[0].status_code == 303
+        assert r.history[0].is_redirect
+
     # def test_HTTP_302_ALLOW_REDIRECT_POST(self):
     #     r = requests.post(httpbin('status', '302'), data={'some': 'data'})
     #     self.assertEqual(r.status_code, 200)
@@ -271,6 +316,26 @@ class TestRequests:
         prep = ses.prepare_request(req)
         assert 'Accept-Encoding' not in prep.headers
 
+    def test_headers_preserve_order(self, httpbin):
+        """Preserve order when headers provided as OrderedDict."""
+        ses = requests.Session()
+        ses.headers = OrderedDict()
+        ses.headers['Accept-Encoding'] = 'identity'
+        ses.headers['First'] = '1'
+        ses.headers['Second'] = '2'
+        headers = OrderedDict([('Third', '3'), ('Fourth', '4')])
+        headers['Fifth'] = '5'
+        headers['Second'] = '222'
+        req = requests.Request('GET', httpbin('get'), headers=headers)
+        prep = ses.prepare_request(req)
+        items = list(prep.headers.items())
+        assert items[0] == ('Accept-Encoding', 'identity')
+        assert items[1] == ('First', '1')
+        assert items[2] == ('Second', '222')
+        assert items[3] == ('Third', '3')
+        assert items[4] == ('Fourth', '4')
+        assert items[5] == ('Fifth', '5')
+
     @pytest.mark.parametrize('key', ('User-agent', 'user-agent'))
     def test_user_agent_transfers(self, httpbin, key):
 
@@ -314,6 +379,11 @@ class TestRequests:
     def test_errors(self, url, exception):
         with pytest.raises(exception):
             requests.get(url, timeout=1)
+
+    def test_proxy_error(self):
+        # any proxy related error (address resolution, no route to host, etc) should result in a ProxyError
+        with pytest.raises(ProxyError):
+            requests.get('http://localhost:1', proxies={'http': 'non-resolvable-address'})
 
     def test_basicauth_with_netrc(self, httpbin):
         auth = ('user', 'pass')
@@ -433,6 +503,48 @@ class TestRequests:
         with pytest.raises(ValueError):
             requests.post(url, files=['bad file data'])
 
+    def test_POSTBIN_SEEKED_OBJECT_WITH_NO_ITER(self, httpbin):
+
+        class TestStream(object):
+            def __init__(self, data):
+                self.data = data.encode()
+                self.length = len(self.data)
+                self.index = 0
+
+            def __len__(self):
+                return self.length
+
+            def read(self, size=None):
+                if size:
+                    ret = self.data[self.index:self.index + size]
+                    self.index += size
+                else:
+                    ret = self.data[self.index:]
+                    self.index = self.length
+                return ret
+
+            def tell(self):
+                return self.index
+
+            def seek(self, offset, where=0):
+                if where == 0:
+                    self.index = offset
+                elif where == 1:
+                    self.index += offset
+                elif where == 2:
+                    self.index = self.length + offset
+
+        test = TestStream('test')
+        post1 = requests.post(httpbin('post'), data=test)
+        assert post1.status_code == 200
+        assert post1.json()['data'] == 'test'
+
+        test = TestStream('test')
+        test.seek(2)
+        post2 = requests.post(httpbin('post'), data=test)
+        assert post2.status_code == 200
+        assert post2.json()['data'] == 'st'
+
     def test_POSTBIN_GET_POST_FILES_WITH_DATA(self, httpbin):
 
         url = httpbin('post')
@@ -546,6 +658,14 @@ class TestRequests:
 
         resp = s.send(prep)
         assert resp.status_code == 200
+
+    def test_non_prepared_request_error(self):
+        s = requests.Session()
+        req = requests.Request(u('POST'), '/')
+
+        with pytest.raises(ValueError) as e:
+            s.send(req)
+        assert str(e.value) == 'You can only send PreparedRequests.'
 
     def test_custom_content_type(self, httpbin):
         r = requests.post(
@@ -1097,6 +1217,28 @@ class TestRequests:
         next(r.iter_lines())
         assert len(list(r.iter_lines())) == 3
 
+    def test_session_close_proxy_clear(self, mocker):
+        proxies = {
+          'one': mocker.Mock(),
+          'two': mocker.Mock(),
+        }
+        session = requests.Session()
+        mocker.patch.dict(session.adapters['http://'].proxy_manager, proxies)
+        session.close()
+        proxies['one'].clear.assert_called_once_with()
+        proxies['two'].clear.assert_called_once_with()
+
+    def test_response_json_when_content_is_None(self, httpbin):
+        r = requests.get(httpbin('/status/204'))
+        # Make sure r.content is None
+        r.status_code = 0
+        r._content = False
+        r._content_consumed = False
+
+        assert r.content is None
+        with pytest.raises(ValueError):
+            r.json()
+
 
 class TestCaseInsensitiveDict:
 
@@ -1386,6 +1528,18 @@ class RedirectSession(SessionRedirectMixin):
         return string
 
 
+def test_json_encodes_as_bytes():
+    # urllib3 expects bodies as bytes-like objects
+    body = {"key": "value"}
+    p = PreparedRequest()
+    p.prepare(
+        method='GET',
+        url='https://www.example.com/',
+        json=body
+    )
+    assert isinstance(p.body, bytes)
+
+
 def test_requests_are_updated_each_time(httpbin):
     session = RedirectSession([303, 307])
     prep = requests.Request('POST', httpbin('post')).prepare()
@@ -1405,6 +1559,27 @@ def test_requests_are_updated_each_time(httpbin):
         assert response.request.method == 'GET'
         send_call = SendCall((response.request,), default_keyword_args)
         assert session.calls[-1] == send_call
+
+
+@pytest.mark.parametrize("var,url,proxy", [
+    ('http_proxy', 'http://example.com', 'socks5://proxy.com:9876'),
+    ('https_proxy', 'https://example.com', 'socks5://proxy.com:9876'),
+    ('all_proxy', 'http://example.com', 'socks5://proxy.com:9876'),
+    ('all_proxy', 'https://example.com', 'socks5://proxy.com:9876'),
+])
+def test_proxy_env_vars_override_default(var, url, proxy):
+    session = requests.Session()
+    prep = PreparedRequest()
+    prep.prepare(method='GET', url=url)
+
+    kwargs = {
+        var: proxy
+    }
+    scheme = urlparse(url).scheme
+    with override_environ(**kwargs):
+        proxies = session.rebuild_proxies(prep, {})
+        assert scheme in proxies
+        assert proxies[scheme] == proxy
 
 
 @pytest.mark.parametrize(
